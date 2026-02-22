@@ -11,7 +11,7 @@ Obsidian's Live Preview (editing mode) uses CodeMirror 6, which follows the Comm
 ```markdown
 は、**知識があれば**です。       ← Doesn't render as bold
 **テスト。**テスト              ← Doesn't render as bold
-これは**重要な**テキストです     ← Doesn't render as bold  
+これは**重要な**テキストです     ← Doesn't render as bold
 ```
 
 > **Note**: Reading mode (preview) renders correctly — the bug only affects Live Preview (editing mode).
@@ -20,38 +20,38 @@ This is a [known CommonMark issue (#650)](https://github.com/commonmark/commonma
 
 ## How It Works
 
-The plugin registers a CodeMirror 6 ViewPlugin that:
+The plugin registers a CodeMirror 6 ViewPlugin that operates in 4 phases:
 
-1. Scans visible text for `**...**` and `*...*` patterns
-2. Checks if the parser already handled them (to avoid double-processing)
-3. Detects CJK context (CJK characters or fullwidth punctuation near delimiters)
-4. Applies bold/italic CSS decorations where the parser failed
+1. **Collect parser emphasis** — Reads HyperMD syntax tree to find where the parser applied bold/italic
+2. **Find correct emphasis** — Uses per-line regex to determine where `**...**`, `*...*`, and `***...***` patterns with CJK content should actually be
+3. **Override wrong emphasis** — Applies `font-weight: normal` to ranges the parser incorrectly bolded
+4. **Apply correct emphasis** — Adds bold/italic styling and hides `**`/`*` markers where the parser missed
 
 ## Installation
 
-### From Community Plugins (coming soon)
+### From Community Plugins
 
 Search for "CJK Bold Fix" in Obsidian's Community Plugins browser.
 
 ### Manual Installation
 
-1. Download `main.js` and `manifest.json` from the latest release
-2. Create a folder `obsidian-cjk-bold-fix` in your vault's `.obsidian/plugins/` directory
+1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/ebibibi/obsidian-cjk-bold-fix/releases)
+2. Create a folder `cjk-bold-fix` in your vault's `.obsidian/plugins/` directory
 3. Copy the files into that folder
 4. Enable the plugin in Obsidian's settings
 
 ## Supported Languages
 
-- 🇯🇵 Japanese (Hiragana, Katakana, Kanji)
-- 🇨🇳 Chinese (Simplified & Traditional)
-- 🇰🇷 Korean (Hangul)
+- Japanese (Hiragana, Katakana, Kanji)
+- Chinese (Simplified & Traditional)
+- Korean (Hangul)
 
 ## Technical Details
 
 - **Approach**: ViewPlugin + Decoration (no monkey-patching, no internal API dependencies)
-- **Performance**: Only processes visible ranges, rebuilds only on document/viewport changes
+- **Performance**: Only processes visible ranges, rebuilds only on document/viewport/selection changes
 - **Compatibility**: Uses only official Obsidian plugin APIs (`registerEditorExtension`)
-- **Size**: ~3KB minified
+- **Emphasis types**: Bold (`**`), italic (`*`), and bold+italic (`***`)
 
 ## Related
 

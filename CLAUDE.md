@@ -1,4 +1,4 @@
-# obsidian-cjk-bold-fix
+# cjk-bold-fix
 
 Obsidian plugin that fixes CJK (Chinese/Japanese/Korean) bold and italic rendering in Live Preview mode.
 
@@ -6,15 +6,23 @@ Obsidian plugin that fixes CJK (Chinese/Japanese/Korean) bold and italic renderi
 
 - **Approach**: ViewPlugin + Decoration (no monkey-patching)
 - **Entry**: `src/main.ts` → registers `cjkEmphasisExtension()` via `registerEditorExtension`
-- **Core**: `src/extension.ts` → ViewPlugin that detects un-parsed emphasis around CJK text
+- **Core**: `src/extension.ts` → ViewPlugin with 4-phase decoration builder
 - **CJK Detection**: `src/cjk.ts` → Unicode range checks for CJK characters
 
-## How it works
+## How it works (4 phases)
 
-1. `buildDecorations()` scans visible lines for `**...**` and `*...*` patterns
-2. `isAlreadyEmphasis()` checks if the lezer parser already handled the match
-3. `isCJKEmphasisContext()` confirms CJK characters/punctuation are involved
-4. Applies CSS decorations (`cm-cjk-strong`, `cm-cjk-emphasis`) where parser failed
+1. **Phase 1**: Collect parser bold/italic ranges from HyperMD syntax tree (`strong`, `em` node names)
+2. **Phase 2**: Find correct emphasis via per-line regex (`***...***`, `**...**`, `*...*` with CJK content)
+3. **Phase 3**: Override wrong parser emphasis with `font-weight: normal !important`
+4. **Phase 4**: Apply correct emphasis styling + hide `**`/`*` markers (cursor-aware: show when editing)
+
+## Key discovery: Obsidian uses HyperMD node names
+
+Standard `@lezer/markdown` uses `StrongEmphasis`/`Emphasis`, but Obsidian's HyperMD-based parser uses:
+- `strong` → bold content
+- `em` → italic content
+- `formatting_formatting-strong_strong` → `**` markers
+- `em_strong` → bold+italic content
 
 ## Build
 
@@ -32,7 +40,11 @@ and a CJK ideograph appears outside, the right-flanking check fails because:
 - `pBefore=true` (punct inside) requires `sAfter||pAfter`
 - CJK ideograph is neither whitespace nor punctuation → `canClose=false`
 
-## Test
+## Release
 
-Install to vault: copy `main.js` + `manifest.json` to `.obsidian/plugins/obsidian-cjk-bold-fix/`
-Test note: `00_Inbox/CJK_Bold_Fix_Test.md`
+Plugin ID: `cjk-bold-fix` (no "obsidian" prefix — required by community plugin rules)
+
+```bash
+npm run build
+gh release create 1.0.0 main.js manifest.json --title "1.0.0" --notes "Initial release"
+```
