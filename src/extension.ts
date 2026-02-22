@@ -5,108 +5,35 @@ import {
 	DecorationSet,
 	EditorView,
 } from "@codemirror/view";
-import { RangeSetBuilder, Extension } from "@codemirror/state";
+import { Extension, Prec, Range } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
-import { startsWithCJK } from "./cjk";
+import { isCJKCharacter } from "./cjk";
 
-// Regex patterns for emphasis markers that the parser may have missed.
-// We look for literal ** or * surrounding content.
-const STRONG_RE = /\*\*([^*]+)\*\*/g;
+const STRONG_RE = /\*\*(.+?)\*\*/g;
 const EMPHASIS_RE = /(?<!\*)\*([^*]+)\*(?!\*)/g;
 
-interface EmphasisMatch {
-	absFrom: number;
-	absTo: number;
+interface MatchRange {
+	from: number;
+	to: number;
+	contentFrom: number;
+	contentTo: number;
 	delimLen: number;
 	cssClass: string;
 }
 
-/**
- * Checks whether a position in the syntax tree is already inside an
- * Emphasis or StrongEmphasis node (i.e., the parser handled it correctly).
- */
-function isAlreadyEmphasis(view: EditorView, from: number, to: number): boolean {
-	let found = false;
-	syntaxTree(view.state).iterate({
-		from,
-		to,
-		enter(node) {
-			const name = node.name;
-			if (
-				name === "Emphasis" ||
-				name === "StrongEmphasis" ||
-				name === "EmphasisMark"
-			) {
-				found = true;
-				return false; // stop
-			}
-		},
-	});
-	return found;
-}
-
-/**
- * Determines whether the emphasis match involves CJK context —
- * meaning it likely failed due to the CommonMark flanking bug.
- * We check: does the content contain CJK, AND is there a CJK or
- * punctuation character adjacent to the delimiter on the outside?
- */
-function isCJKEmphasisContext(
-	lineText: string,
-	matchStart: number,
-	matchEnd: number,
-	delimLen: number
-): boolean {
-	const inner = lineText.slice(matchStart + delimLen, matchEnd - delimLen);
-	// The inner content should contain at least one CJK character
-	// or CJK punctuation for this fix to apply
-	let hasCJK = false;
-	for (let i = 0; i < inner.length; i++) {
-		const code = inner.codePointAt(i)!;
-		if (
-			startsWithCJK(String.fromCodePoint(code)) ||
-			isFullwidthPunctuation(code)
-		) {
-			hasCJK = true;
-			break;
-		}
+function hasCJK(text: string): boolean {
+	for (const ch of text) {
+		const code = ch.codePointAt(0);
+		if (code !== undefined && isCJKCharacter(code)) return true;
 	}
-	if (!hasCJK) return false;
-
-	// Also check: is there a CJK char or fullwidth punct adjacent outside?
-	// Before the opening delimiter
-	if (matchStart > 0) {
-		const codeBefore = lineText.codePointAt(matchStart - 1);
-		if (codeBefore !== undefined && (startsWithCJK(String.fromCodePoint(codeBefore)) || isFullwidthPunctuation(codeBefore))) {
-			return true;
-		}
-	}
-	// After the closing delimiter
-	if (matchEnd < lineText.length) {
-		const codeAfter = lineText.codePointAt(matchEnd);
-		if (codeAfter !== undefined && (startsWithCJK(String.fromCodePoint(codeAfter)) || isFullwidthPunctuation(codeAfter))) {
-			return true;
-		}
-	}
-
-	// Even without adjacent CJK outside, if inside has CJK + punct at boundary
-	// e.g., **テスト。** at end of line
-	const firstInner = inner.codePointAt(0);
-	const lastInner = inner.codePointAt(inner.length - 1);
-	if (firstInner !== undefined && startsWithCJK(String.fromCodePoint(firstInner))) return true;
-	if (lastInner !== undefined && (startsWithCJK(String.fromCodePoint(lastInner)) || isFullwidthPunctuation(lastInner))) return true;
-
 	return false;
 }
 
-function isFullwidthPunctuation(code: number): boolean {
+function isFullwidthPunct(code: number): boolean {
 	return (
-		// Ideographic Full Stop, Comma
 		(code >= 0x3001 && code <= 0x3002) ||
-		// CJK brackets 「」『』【】〈〉《》〔〕
 		(code >= 0x300C && code <= 0x3011) ||
 		(code >= 0x3014 && code <= 0x301B) ||
-		// Fullwidth punctuation ！＂＃...
 		(code >= 0xFF01 && code <= 0xFF0F) ||
 		(code >= 0xFF1A && code <= 0xFF20) ||
 		(code >= 0xFF3B && code <= 0xFF40) ||
@@ -114,39 +41,65 @@ function isFullwidthPunctuation(code: number): boolean {
 	);
 }
 
-// CSS class for hiding the delimiter markers in Live Preview
-const hideMarkDeco = Decoration.mark({ class: "cm-cjk-emphasis-mark" });
-
-function collectMatches(
-	view: EditorView,
-	pattern: RegExp,
-	lineText: string,
-	lineFrom: number,
-	delimLen: number,
-	cssClass: string
-): EmphasisMatch[] {
-	const matches: EmphasisMatch[] = [];
-	pattern.lastIndex = 0;
-	let match: RegExpExecArray | null;
-
-	while ((match = pattern.exec(lineText)) !== null) {
-		const matchStart = match.index;
-		const matchEnd = matchStart + match[0].length;
-		const absFrom = lineFrom + matchStart;
-		const absTo = lineFrom + matchEnd;
-
-		if (isAlreadyEmphasis(view, absFrom, absTo)) continue;
-		if (!isCJKEmphasisContext(lineText, matchStart, matchEnd, delimLen)) continue;
-
-		matches.push({ absFrom, absTo, delimLen, cssClass });
+function hasFullwidthPunct(text: string): boolean {
+	for (const ch of text) {
+		const code = ch.codePointAt(0);
+		if (code !== undefined && isFullwidthPunct(code)) return true;
 	}
-	return matches;
+	return false;
+}
+
+function isCJKRelated(text: string): boolean {
+	return hasCJK(text) || hasFullwidthPunct(text);
+}
+
+/**
+ * Subtract exclude ranges from a base range, returning non-overlapping pieces.
+ */
+function subtractRanges(
+	from: number,
+	to: number,
+	excludes: { from: number; to: number }[]
+): { from: number; to: number }[] {
+	const result: { from: number; to: number }[] = [];
+	const sorted = [...excludes]
+		.filter((e) => e.from < to && e.to > from)
+		.sort((a, b) => a.from - b.from);
+
+	let cursor = from;
+	for (const exc of sorted) {
+		if (exc.from > cursor) {
+			result.push({ from: cursor, to: Math.min(exc.from, to) });
+		}
+		cursor = Math.max(cursor, exc.to);
+	}
+	if (cursor < to) {
+		result.push({ from: cursor, to });
+	}
+	return result;
 }
 
 function buildDecorations(view: EditorView): DecorationSet {
-	const builder = new RangeSetBuilder<Decoration>();
+	const decoRanges: Range<Decoration>[] = [];
 	const doc = view.state.doc;
-	const allMatches: EmphasisMatch[] = [];
+	const tree = syntaxTree(view.state);
+
+	// Phase 1: Collect parser emphasis nodes
+	const parserNodes: { from: number; to: number; name: string }[] = [];
+	tree.iterate({
+		enter(node) {
+			if (node.name === "StrongEmphasis" || node.name === "Emphasis") {
+				parserNodes.push({
+					from: node.from,
+					to: node.to,
+					name: node.name,
+				});
+			}
+		},
+	});
+
+	// Phase 2: Find correct emphasis via regex (per line)
+	const correctMatches: MatchRange[] = [];
 
 	for (const { from, to } of view.visibleRanges) {
 		const startLine = doc.lineAt(from).number;
@@ -157,37 +110,110 @@ function buildDecorations(view: EditorView): DecorationSet {
 			const lineText = line.text;
 			const lineFrom = line.from;
 
-			allMatches.push(
-				...collectMatches(view, STRONG_RE, lineText, lineFrom, 2, "cm-cjk-strong"),
-				...collectMatches(view, EMPHASIS_RE, lineText, lineFrom, 1, "cm-cjk-emphasis")
-			);
+			// Find **...**
+			STRONG_RE.lastIndex = 0;
+			let match;
+			while ((match = STRONG_RE.exec(lineText)) !== null) {
+				const inner = match[1];
+				if (!isCJKRelated(inner)) continue;
+
+				const mFrom = lineFrom + match.index;
+				const mTo = mFrom + match[0].length;
+				correctMatches.push({
+					from: mFrom,
+					to: mTo,
+					contentFrom: mFrom + 2,
+					contentTo: mTo - 2,
+					delimLen: 2,
+					cssClass: "cm-cjk-strong",
+				});
+			}
+
+			// Find *...*
+			EMPHASIS_RE.lastIndex = 0;
+			while ((match = EMPHASIS_RE.exec(lineText)) !== null) {
+				const inner = match[1];
+				if (!isCJKRelated(inner)) continue;
+
+				const mFrom = lineFrom + match.index;
+				const mTo = mFrom + match[0].length;
+
+				// Skip if overlaps with a strong match
+				const overlaps = correctMatches.some(
+					(cm) => mFrom < cm.to && mTo > cm.from
+				);
+				if (overlaps) continue;
+
+				correctMatches.push({
+					from: mFrom,
+					to: mTo,
+					contentFrom: mFrom + 1,
+					contentTo: mTo - 1,
+					delimLen: 1,
+					cssClass: "cm-cjk-emphasis",
+				});
+			}
 		}
 	}
 
-	// RangeSetBuilder requires decorations in ascending position order
-	allMatches.sort((a, b) => a.absFrom - b.absFrom);
+	// Phase 3: Override wrong parser emphasis
+	const overrideDeco = Decoration.mark({ class: "cm-cjk-fix-override" });
 
-	// Remove overlapping matches (Strong takes priority over Emphasis)
-	const filtered: EmphasisMatch[] = [];
-	let lastEnd = -1;
-	for (const m of allMatches) {
-		if (m.absFrom >= lastEnd) {
-			filtered.push(m);
-			lastEnd = m.absTo;
-		}
-	}
+	for (const pe of parserNodes) {
+		const delimLen = pe.name === "StrongEmphasis" ? 2 : 1;
+		const contentFrom = pe.from + delimLen;
+		const contentTo = pe.to - delimLen;
+		if (contentFrom >= contentTo) continue;
 
-	for (const m of filtered) {
-		builder.add(m.absFrom, m.absFrom + m.delimLen, hideMarkDeco);
-		builder.add(
-			m.absFrom + m.delimLen,
-			m.absTo - m.delimLen,
-			Decoration.mark({ class: m.cssClass })
+		const content = doc.sliceString(contentFrom, contentTo);
+
+		// Only process CJK-related emphasis
+		if (!isCJKRelated(content)) continue;
+
+		// Check if this parser emphasis matches one of our correct matches
+		const isCorrect = correctMatches.some(
+			(cm) => cm.from === pe.from && cm.to === pe.to
 		);
-		builder.add(m.absTo - m.delimLen, m.absTo, hideMarkDeco);
+		if (isCorrect) continue;
+
+		// This parser emphasis is WRONG → override it
+		// But exclude ranges where we want our own correct emphasis
+		const pieces = subtractRanges(
+			pe.from,
+			pe.to,
+			correctMatches.map((cm) => ({ from: cm.from, to: cm.to }))
+		);
+		for (const piece of pieces) {
+			if (piece.from < piece.to) {
+				decoRanges.push(overrideDeco.range(piece.from, piece.to));
+			}
+		}
 	}
 
-	return builder.finish();
+	// Phase 4: Apply correct emphasis decorations
+	const markDeco = Decoration.mark({ class: "cm-cjk-emphasis-mark" });
+
+	for (const cm of correctMatches) {
+		// Check if parser already handles this correctly
+		const parserCorrect = parserNodes.some(
+			(pe) => pe.from === cm.from && pe.to === cm.to
+		);
+		if (parserCorrect) continue;
+
+		// Add delimiter marks
+		decoRanges.push(markDeco.range(cm.from, cm.from + cm.delimLen));
+		// Add content styling
+		decoRanges.push(
+			Decoration.mark({ class: cm.cssClass }).range(
+				cm.contentFrom,
+				cm.contentTo
+			)
+		);
+		// Add closing delimiter marks
+		decoRanges.push(markDeco.range(cm.to - cm.delimLen, cm.to));
+	}
+
+	return Decoration.set(decoRanges, true);
 }
 
 const cjkEmphasisViewPlugin = ViewPlugin.fromClass(
@@ -199,7 +225,11 @@ const cjkEmphasisViewPlugin = ViewPlugin.fromClass(
 		}
 
 		update(update: ViewUpdate) {
-			if (update.docChanged || update.viewportChanged || update.selectionSet) {
+			if (
+				update.docChanged ||
+				update.viewportChanged ||
+				update.selectionSet
+			) {
 				this.decorations = buildDecorations(update.view);
 			}
 		}
@@ -209,29 +239,23 @@ const cjkEmphasisViewPlugin = ViewPlugin.fromClass(
 	}
 );
 
-/**
- * Provides the EditorView theme with styles for the CJK emphasis fix.
- * In Obsidian's Live Preview, the native emphasis styling uses these
- * same CSS properties, so the result looks identical.
- */
 const cjkEmphasisTheme = EditorView.baseTheme({
 	".cm-cjk-strong": {
-		fontWeight: "bold",
+		fontWeight: "bold !important",
 	},
 	".cm-cjk-emphasis": {
-		fontStyle: "italic",
+		fontStyle: "italic !important",
 	},
-	// In Live Preview with cursor away, hide the delimiter markers
-	// just like Obsidian does for normal emphasis
 	".cm-cjk-emphasis-mark": {
-		// We don't hide by default — Obsidian's Live Preview handles
-		// showing/hiding based on cursor position through its own mechanism.
-		// Our marks just need to be styled distinctly so they're recognized.
 		color: "var(--text-faint)",
 		fontSize: "0.9em",
+	},
+	".cm-cjk-fix-override": {
+		fontWeight: "normal !important",
+		fontStyle: "normal !important",
 	},
 });
 
 export function cjkEmphasisExtension(): Extension {
-	return [cjkEmphasisViewPlugin, cjkEmphasisTheme];
+	return [Prec.highest(cjkEmphasisViewPlugin), cjkEmphasisTheme];
 }
