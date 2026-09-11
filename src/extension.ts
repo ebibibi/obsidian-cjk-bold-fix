@@ -169,7 +169,7 @@ function buildDecorations(view: EditorView): DecorationSet {
 			STRONG_EM_RE.lastIndex = 0;
 			while ((match = STRONG_EM_RE.exec(lineText)) !== null) {
 				const inner = match[1];
-				if (!isCJKRelated(inner)) continue;
+				if (!isCJKRelated(inner) && !isCJKRelated(lineText)) continue;
 
 				const mFrom = lineFrom + match.index;
 				const mTo = mFrom + match[0].length;
@@ -187,7 +187,7 @@ function buildDecorations(view: EditorView): DecorationSet {
 			STRONG_RE.lastIndex = 0;
 			while ((match = STRONG_RE.exec(lineText)) !== null) {
 				const inner = match[1];
-				if (!isCJKRelated(inner)) continue;
+				if (!isCJKRelated(inner) && !isCJKRelated(lineText)) continue;
 
 				const mFrom = lineFrom + match.index;
 				const mTo = mFrom + match[0].length;
@@ -212,7 +212,7 @@ function buildDecorations(view: EditorView): DecorationSet {
 			EMPHASIS_RE.lastIndex = 0;
 			while ((match = EMPHASIS_RE.exec(lineText)) !== null) {
 				const inner = match[1];
-				if (!isCJKRelated(inner)) continue;
+				if (!isCJKRelated(inner) && !isCJKRelated(lineText)) continue;
 
 				const mFrom = lineFrom + match.index;
 				const mTo = mFrom + match[0].length;
